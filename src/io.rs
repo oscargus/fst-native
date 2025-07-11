@@ -88,6 +88,24 @@ pub(crate) fn read_variant_u32(input: &mut impl Read) -> ReadResult<(u32, u32)> 
 }
 
 #[inline]
+pub(crate) fn read_variant_u32_with_buf(
+    input: &mut impl Read,
+    byte_buf: &mut [u8; 1],
+) -> ReadResult<(u32, u32)> {
+    let mut res = 0u32;
+    // 32bit / 7bit = ~4.6
+    for ii in 0..5u32 {
+        input.read_exact(byte_buf)?;
+        let value = (byte_buf[0] as u32) & 0x7f;
+        res |= value << (7 * ii);
+        if (byte_buf[0] & 0x80) == 0 {
+            return Ok((res, ii + 1));
+        }
+    }
+    Err(ReaderError::Leb128(32))
+}
+
+#[inline]
 pub(crate) fn read_variant_i64(input: &mut impl Read) -> ReadResult<i64> {
     let mut byte = [0u8; 1];
     let mut res = 0u64;
@@ -100,6 +118,30 @@ pub(crate) fn read_variant_i64(input: &mut impl Read) -> ReadResult<i64> {
         if (byte[0] & 0x80) == 0 {
             // sign extend
             let sign_bit_set = (byte[0] & 0x40) != 0;
+            if (shift_by + 7) < u64::BITS && sign_bit_set {
+                res |= u64::MAX << (shift_by + 7);
+            }
+            return Ok(res as i64);
+        }
+    }
+    Err(ReaderError::Leb128(64))
+}
+
+#[inline]
+pub(crate) fn read_variant_i64_with_buf(
+    input: &mut impl Read,
+    byte_buf: &mut [u8; 1],
+) -> ReadResult<i64> {
+    let mut res = 0u64;
+    // 64bit / 7bit = ~9.1
+    for ii in 0..10 {
+        input.read_exact(byte_buf)?;
+        let value = (byte_buf[0] & 0x7f) as u64;
+        let shift_by = 7 * ii;
+        res |= value << shift_by;
+        if (byte_buf[0] & 0x80) == 0 {
+            // sign extend
+            let sign_bit_set = (byte_buf[0] & 0x40) != 0;
             if (shift_by + 7) < u64::BITS && sign_bit_set {
                 res |= u64::MAX << (shift_by + 7);
             }
@@ -186,6 +228,12 @@ pub(crate) fn read_u64(input: &mut impl Read) -> ReadResult<u64> {
     let mut buf = [0u8; 8];
     input.read_exact(&mut buf)?;
     Ok(u64::from_be_bytes(buf))
+}
+
+#[inline]
+pub(crate) fn read_u64_with_buf(input: &mut impl Read, buf: &mut [u8; 8]) -> ReadResult<u64> {
+    input.read_exact(buf)?;
+    Ok(u64::from_be_bytes(*buf))
 }
 
 #[cfg(test)]
@@ -1362,11 +1410,12 @@ fn read_value_change_alias2(
     let mut offset: Option<NonZeroU32> = None;
     let mut prev_alias = 0u32;
     let mut prev_offset_idx = 0usize;
+    let mut byte_buf = [0u8; 1];
     while !chain_bytes.is_empty() {
         let idx = table.len();
         let kind = chain_bytes[0];
         if (kind & 1) == 1 {
-            let shval = read_variant_i64(&mut chain_bytes)? >> 1;
+            let shval = read_variant_i64_with_buf(&mut chain_bytes, &mut byte_buf)? >> 1;
             match shval.cmp(&0) {
                 Ordering::Greater => {
                     // a new incremental offset
@@ -1396,7 +1445,7 @@ fn read_value_change_alias2(
             }
         } else {
             // a block of signals that do not have any data
-            let (value, _) = read_variant_u32(&mut chain_bytes)?;
+            let (value, _) = read_variant_u32_with_buf(&mut chain_bytes, &mut byte_buf)?;
             let zeros = value >> 1;
             for _ in 0..zeros {
                 table.push(SignalDataLoc::None);

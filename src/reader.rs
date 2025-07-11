@@ -521,6 +521,7 @@ impl<R: Read + Seek> HeaderReader<R> {
         Ok(())
     }
 
+    #[inline]
     fn skip(&mut self, section_length: u64, already_read: i64) -> Result<u64> {
         Ok(self
             .input
@@ -789,14 +790,15 @@ impl<R: Read + Seek, F: FnMut(u64, FstSignalHandle, FstSignalValue)> DataReader<
         let relevant_sections = sections
             .iter()
             .filter(|s| self.filter.end >= s.start_time && s.end_time >= self.filter.start);
+        let mut buf = [0u8; 8];
         for (sec_num, section) in relevant_sections.enumerate() {
             // skip to section
             self.input.seek(SeekFrom::Start(section.file_offset))?;
-            let section_length = read_u64(&mut self.input)?;
+            let section_length = read_u64_with_buf(&mut self.input, &mut buf)?;
 
             // verify meta-data
-            let start_time = read_u64(&mut self.input)?;
-            let end_time = read_u64(&mut self.input)?;
+            let start_time = read_u64_with_buf(&mut self.input, &mut buf)?;
+            let end_time = read_u64_with_buf(&mut self.input, &mut buf)?;
             assert_eq!(start_time, section.start_time);
             assert_eq!(end_time, section.end_time);
             let is_first_section = sec_num == 0;
